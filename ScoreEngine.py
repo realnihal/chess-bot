@@ -46,16 +46,16 @@ def improved_score(new_board):
 
     score += space * 1/64
 
-    # # remove hanging pieces from material count
-    #
-    # all_pieces = new_board.piece_map().items()
-    #
-    # for square, piece in all_pieces:
-    #     if piece.color == turn:
-    #         attacker_count = len(new_board.attackers(not turn, square))
-    #         defender_count = len(new_board.attackers(turn, square))
-    #         if attacker_count > defender_count:
-    #             score -= PIECE_VALUES[piece.symbol().upper()]
+    # remove hanging pieces from material count
+    
+    all_pieces = new_board.piece_map().items()
+    
+    for square, piece in all_pieces:
+        if piece.color == turn:
+            attacker_count = len(new_board.attackers(not turn, square))
+            defender_count = len(new_board.attackers(turn, square))
+            if attacker_count > defender_count:
+                score -= PIECE_VALUES[piece.symbol().upper()]
 
     return score
 
@@ -89,7 +89,7 @@ def minimax_score(board, opponent_best=INFINITY, my_best=-INFINITY, curr_depth=0
             return 10000 / curr_depth  # prefer shallower checkmates
 
     if curr_depth == config.max_depth:
-        return improved_score(board)
+        return sort_heuristic(board)
 
     # recursively reason about best move
 
