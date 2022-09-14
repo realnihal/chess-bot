@@ -16,9 +16,6 @@ PIECE_VALUES = {
 def material_count(new_board):
     # count material in the new position for player who just moved
 
-    if new_board.is_stalemate():
-        return 0
-
     all_pieces = new_board.piece_map().values()
 
     material_difference = 0
@@ -29,9 +26,6 @@ def material_count(new_board):
             material_difference -= value
         else:
             material_difference += value
-
-    if new_board.is_checkmate():
-        material_difference += 999999
 
     return material_difference
 
@@ -72,8 +66,8 @@ positions = 0
 
 
 Config = namedtuple("Config",
-                    ['prune', 'cache', 'sort', 'max_depth', 'sort_heuristic'],
-                    defaults=[True, True, True, 4, None])
+                    ['prune', 'cache', 'sort', 'max_depth'],
+                    defaults=[True, True, True, 4])
 
 
 def minimax_score(board, opponent_best=INFINITY, my_best=-INFINITY, curr_depth=0,
@@ -85,7 +79,16 @@ def minimax_score(board, opponent_best=INFINITY, my_best=-INFINITY, curr_depth=0
 
     turn = board.turn
 
-    if curr_depth == config.max_depth or board.outcome():
+    # with claim_draw=False, outcome will not know about repetition, but we handle this elsewhere
+    outcome = board.outcome(claim_draw=False)
+    
+    if outcome:
+        if outcome.winner is None:
+            return 0
+        else: 
+            return 10000 / curr_depth  # prefer shallower checkmates
+
+    if curr_depth == config.max_depth:
         return improved_score(board)
 
     # recursively reason about best move
@@ -100,36 +103,40 @@ def minimax_score(board, opponent_best=INFINITY, my_best=-INFINITY, curr_depth=0
     for move in moves:
         # apply the current candidate move
 
-        new_board = board.copy()
-        new_board.push(move)
+        board.push(move)
         
-        sort_score = sort_heuristic(new_board) \
+        sort_score = sort_heuristic(board) \
             if config.sort else 0
 
-        children.append((sort_score, new_board, move))
+        board.pop()
 
-    for _, new_board, move in sorted(children, key=lambda x: x[0], reverse=True):
+        children.append((sort_score, move))
+
+    for _, move in sorted(children, key=lambda x: x[0], reverse=True):
+
+        board.push(move)
 
         if config.cache:
             # The cache saves score and depth of score calculation.
 
-            fen = new_board.fen()
-            fen = fen[:-4]  # remove move counts from fen
+            key = board._transposition_key()
 
-            score, cached_depth = cache[fen] if fen in cache else (0, 0)
+            score, cached_depth = cache[key] if key in cache else (0, 0)
 
             # depth of score estimate if we compute it
             new_depth = config.max_depth - curr_depth
 
             # if we could get a deeper estimate than what is in the cache
             if new_depth > cached_depth:
-                score = minimax_score(new_board, -my_best, -opponent_best, curr_depth + 1, cache, config, sort_heuristic)
+                score = minimax_score(board, -my_best, -opponent_best, curr_depth + 1, cache, config, sort_heuristic)
 
-                cache[fen] = (score, new_depth)
+                cache[key] = (score, new_depth)
             else:
                 cache_hits += 1
         else:
-            score = minimax_score(new_board, -my_best, -opponent_best, curr_depth + 1, cache, config, sort_heuristic)
+            score = minimax_score(board, -my_best, -opponent_best, curr_depth + 1, cache, config, sort_heuristic)
+
+        board.pop()
 
         if score > best_score:
             best_move = move
@@ -153,16 +160,27 @@ class ScoreEngine(object):
         self.score_function = score_function
         self.config = config
         self.known_positions = {}
+        self.visited_positions = set()
 
     def cached_score(self, new_board):
-        fen = new_board.fen()
-        fen = fen[:-4]  # remove move counts from fen
-        # todo: refactor to create standard modified FEN
+        key = new_board._transposition_key()
 
-        if fen in self.known_positions:
-            score, _ = self.known_positions[fen]
+        if key in self.known_positions:
+            score, _ = self.known_positions[key]
             return score
         return material_count(new_board)
+    
+    def store_position(self, board):
+        """
+        Store actually visited position. If a position has been visited before,
+        flag it for potential 3-fold repetition by zeroing its cache value
+        """
+        key = board._transposition_key()
+
+        if key in self.visited_positions:
+            self.known_positions[key] = (0, INFINITY)
+        else:
+            self.visited_positions.add(key)
 
     def play(self, board):
         start_time = time.time()
@@ -186,6 +204,11 @@ class ScoreEngine(object):
                 best_score = score
         
         print("Found move in {} seconds".format(time.time() - start_time))
+
+        board.push(best_move)
+        self.store_position(board)
+        board.pop()
+
         return best_move
 
 
@@ -194,8 +217,8 @@ if __name__ == "__main__":
     # board = chess.Board('3rk3/1p2qp2/2p2n2/1B3bp1/1b1Qp3/8/PPPP1PP1/RNB1K1N1 w Q - 0 23')
     # board = chess.Board('Q1R5/6K1/1k6/3B4/5r1P/5rP1/8/1r6 b - - 0 1')
 
-    configs = [Config(sort_heuristic=material_count, max_depth=4),
-               Config(sort_heuristic=False, max_depth=4)
+    configs = [Config(max_depth=3),
+               # Config(sort_heuristic=False, max_depth=4)
                ]
 
     for config in configs:
@@ -206,16 +229,11 @@ if __name__ == "__main__":
 
         print("Starting " + repr(config))
 
-        # todo: very ugly hack to get some quick experiments
-        # configuration currently does not consider the sort heuristic.
-        # it's hard coded to use cached score.
-        if not config.sort_heuristic:
-            config = Config(sort_heuristic=engine.cached_score, max_depth=4)
-
         engine = ScoreEngine(config=config)
 
         start_time = time.time()
         move = engine.play(board)
+
         print("Found move in {} seconds".format(time.time() - start_time))
 
         print("Cache hits: {}. Prunes: {}. Positions: {}.".format(cache_hits, num_pruned, positions))
